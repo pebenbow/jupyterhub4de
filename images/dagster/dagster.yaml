@@ -1,0 +1,11 @@
+# Dagster instance config. Run/event-log storage stays local to this
+# container (sqlite under DAGSTER_HOME) — it's Dagster's own bookkeeping,
+# not pipeline data, so it doesn't need the shared PVC (issue #5's PVC is
+# for pipeline code + Delta tables only).
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator

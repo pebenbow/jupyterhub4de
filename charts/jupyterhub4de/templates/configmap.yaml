@@ -1,0 +1,14 @@
+# Single source of truth for cross-component addressing (issue #5): both
+# the static templates below and Dagster's dynamically-built Job Pod specs
+# (images/dagster/defs/job_pod.py) read from this, so the two code paths
+# can't drift.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jupyterhub4de-shared-config
+  namespace: {{ .Release.Namespace }}
+data:
+  HIVE_METASTORE_URI: "thrift://{{ .Values.jupyterhub4de.hiveMetastore.serviceName }}:9083"
+  PVC_CLAIM_NAME: {{ .Values.jupyterhub4de.sharedPvc.name }}
+  CODE_SUBPATH: {{ .Values.jupyterhub4de.sharedPvc.codeSubpath }}
+  DATA_SUBPATH: {{ .Values.jupyterhub4de.sharedPvc.dataSubpath }}

@@ -1,0 +1,58 @@
+# See README.md for the rationale behind each override group.
+
+jupyterhub4de:
+  namespace: jupyterhub4de
+  images:
+    notebook: "ghcr.io/pebenbow/jupyterhub4de-notebook:latest"
+    dagster: "ghcr.io/pebenbow/jupyterhub4de-dagster:latest"
+  sharedPvc:
+    name: jupyterhub4de-shared
+    size: 20Gi
+    # Docker Desktop k8s's default StorageClass (hostpath-provisioner);
+    # override if your cluster's default differs.
+    storageClassName: hostpath
+    codeSubpath: code
+    dataSubpath: data
+  hiveMetastore:
+    # Fixed, unqualified Service name — images/notebook/hive-site.xml bakes
+    # in `thrift://hive-metastore:9083` so it never needs per-release
+    # templating (see that file's comment).
+    serviceName: hive-metastore
+    image: "apache/hive:4.0.0"
+    warehouseDir: /data/warehouse
+
+# ---- Zero to JupyterHub overrides ----------------------------------------
+jupyterhub:
+  singleuser:
+    image:
+      name: ghcr.io/pebenbow/jupyterhub4de-notebook
+      tag: latest
+    # Z2JH's default `storage.type: dynamic` provisions one PVC per user.
+    # This prototype instead shares one PVC with Dagster's Job Pods (issue
+    # #5), so storage provisioning is turned off here and the shared PVC
+    # (templates/pvc.yaml) is mounted explicitly instead. See README.md.
+    storage:
+      type: none
+    extraVolumes:
+      - name: shared-pvc
+        persistentVolumeClaim:
+          claimName: jupyterhub4de-shared
+    extraVolumeMounts:
+      - name: shared-pvc
+        mountPath: /home/jovyan/data
+        subPath: data
+      - name: shared-pvc
+        mountPath: /home/jovyan/code
+        subPath: code
+  hub:
+    config:
+      JupyterHub:
+        authenticator_class: dummy
+
+# ---- Postgres overrides (backs Hive Metastore only — Z2JH's hub uses its
+# own default sqlite db, fine for this single-node prototype) -------------
+postgresql:
+  auth:
+    username: hive
+    password: hive
+    database: hive_metastore

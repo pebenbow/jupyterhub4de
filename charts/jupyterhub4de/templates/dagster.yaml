@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster
+  template:
+    metadata:
+      labels:
+        app: dagster
+    spec:
+      serviceAccountName: dagster
+      containers:
+        - name: dagster
+          image: {{ .Values.jupyterhub4de.images.dagster }}
+          envFrom:
+            - configMapRef:
+                name: jupyterhub4de-shared-config
+          env:
+            - name: K8S_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: NOTEBOOK_IMAGE
+              value: {{ .Values.jupyterhub4de.images.notebook }}
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: dagster
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -1,0 +1,3 @@
+# Dagster launches per-run Job Pods rather than sharing a Spark session
+
+Dagster runs as its own container, separate from the notebook container. Rather than have Dagster attach to a long-running Spark session (e.g. via a Livy-style gateway) shared with student notebooks, each Dagster run launches a fresh, short-lived Job Pod using the notebook image, independent of the notebook pod's lifecycle. This avoids state leakage between a student's interactive session and pipeline runs, avoids resource contention over a shared JVM/executor pool, and matches Dagster's native `k8s_job` execution model, minimizing custom glue. Pipeline code and Delta table data both live on one shared PVC (separate subpaths) so pipeline scripts can be updated without rebuilding the image.

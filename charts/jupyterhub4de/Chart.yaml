@@ -1,0 +1,21 @@
+apiVersion: v2
+name: jupyterhub4de
+description: >-
+  Single-user JupyterHub + PySpark + Delta Lake + Hive Metastore + MLflow
+  (client-only) + Dagster prototype for the Data Engineering course
+  (jupyterhub4de issue #1). Umbrella chart per issue #5's resolution:
+  Zero to JupyterHub and Postgres as external subchart dependencies, our
+  own pieces (Dagster, Hive Metastore, shared PVC, RBAC, ConfigMap) as
+  plain templates.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: jupyterhub
+    alias: jupyterhub
+    version: "3.3.8"
+    repository: "https://hub.jupyter.org/helm-chart/"
+  - name: postgresql
+    alias: postgresql
+    version: "16.2.3"
+    repository: "https://charts.bitnami.com/bitnami"

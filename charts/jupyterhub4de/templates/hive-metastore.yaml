@@ -1,0 +1,57 @@
+# Standalone Hive Metastore (Catalog Layer, issue #2), backed by the
+# Postgres subchart dependency rather than embedded Derby — concurrent
+# access from a notebook pod and a Dagster Job Pod at the same time is a
+# core scenario here, and Derby's single-connection limit would break it
+# (issue #5).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hive-metastore
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hive-metastore
+  template:
+    metadata:
+      labels:
+        app: hive-metastore
+    spec:
+      containers:
+        - name: hive-metastore
+          image: {{ .Values.jupyterhub4de.hiveMetastore.image }}
+          env:
+            - name: SERVICE_NAME
+              value: metastore
+            - name: DB_DRIVER
+              value: postgres
+            - name: SERVICE_OPTS
+              value: >-
+                -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+                -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://{{ .Release.Name }}-postgresql:5432/{{ .Values.postgresql.auth.database }}
+                -Djavax.jdo.option.ConnectionUserName={{ .Values.postgresql.auth.username }}
+                -Djavax.jdo.option.ConnectionPassword={{ .Values.postgresql.auth.password }}
+                -Dhive.metastore.warehouse.dir={{ .Values.jupyterhub4de.hiveMetastore.warehouseDir }}
+          ports:
+            - containerPort: 9083
+          volumeMounts:
+            - name: shared-pvc
+              mountPath: /data
+              subPath: {{ .Values.jupyterhub4de.sharedPvc.dataSubpath }}
+      volumes:
+        - name: shared-pvc
+          persistentVolumeClaim:
+            claimName: {{ .Values.jupyterhub4de.sharedPvc.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.jupyterhub4de.hiveMetastore.serviceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: hive-metastore
+  ports:
+    - port: 9083
+      targetPort: 9083

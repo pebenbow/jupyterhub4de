@@ -1,0 +1,16 @@
+jupyterhub4de installed into namespace {{ .Release.Namespace }}.
+
+JupyterHub:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-proxy-public 8080:80
+  open http://localhost:8080  (DummyAuthenticator — any username, any password)
+
+Dagster webserver:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/dagster 3000:3000
+  open http://localhost:3000
+
+Hive Metastore health:
+  kubectl -n {{ .Release.Namespace }} logs deploy/hive-metastore
+  kubectl -n {{ .Release.Namespace }} get pods -l app=hive-metastore
+
+Pipeline code lives on the shared PVC's /code subpath — see
+charts/jupyterhub4de/README.md for how to get pipeline scripts onto it.

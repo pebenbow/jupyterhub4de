@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!--
+  Points Spark's Hive support at the external Hive Metastore service
+  (Catalog Layer choice, issue #2) instead of the embedded Derby metastore.
+  hive.metastore.uris matches the Service name the Helm chart
+  (charts/jupyterhub4de) gives Hive Metastore — a fixed, unqualified
+  in-cluster DNS name (see charts/jupyterhub4de/templates/hive-metastore-service.yaml)
+  chosen precisely so this baked-in value never has to be templated per
+  release.
+-->
+<configuration>
+  <property>
+    <name>hive.metastore.uris</name>
+    <value>thrift://hive-metastore:9083</value>
+  </property>
+</configuration>

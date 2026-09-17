@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.jupyterhub4de.sharedPvc.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.jupyterhub4de.sharedPvc.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.jupyterhub4de.sharedPvc.size }}
