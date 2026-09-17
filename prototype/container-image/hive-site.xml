@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!--
+  PROTOTYPE config — issue #3. Points Spark's Hive support at an external
+  Hive Metastore service (settled Catalog Layer choice, issue #2) instead of
+  the embedded Derby metastore. hive.metastore.uris is a placeholder;
+  the real value is wired in by the Helm chart ticket (#5) via the
+  metastore service's in-cluster DNS name.
+-->
+<configuration>
+  <property>
+    <name>hive.metastore.uris</name>
+    <value>thrift://hive-metastore:9083</value>
+  </property>
+</configuration>
