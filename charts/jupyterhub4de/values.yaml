@@ -31,6 +31,13 @@ jupyterhub:
     # This prototype instead shares one PVC with Dagster's Job Pods (issue
     # #5), so storage provisioning is turned off here and the shared PVC
     # (templates/pvc.yaml) is mounted explicitly instead. See README.md.
+    #
+    # Mounted at /data and /code (not under /home/jovyan) to match the
+    # mount paths Job Pods (images/dagster/defs/job_pod.py) and Hive
+    # Metastore (templates/hive-metastore.yaml) use — Hive Metastore
+    # records each table's location as an absolute file URI, so every pod
+    # that might read one back needs the shared PVC mounted at the same
+    # absolute path.
     storage:
       type: none
       homeMountPath: /home/jovyan
@@ -40,10 +47,10 @@ jupyterhub:
             claimName: jupyterhub4de-shared
       extraVolumeMounts:
         - name: shared-pvc
-          mountPath: /home/jovyan/data
+          mountPath: /data
           subPath: data
         - name: shared-pvc
-          mountPath: /home/jovyan/code
+          mountPath: /code
           subPath: code
   hub:
     config:
