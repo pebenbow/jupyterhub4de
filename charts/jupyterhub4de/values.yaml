@@ -33,17 +33,18 @@ jupyterhub:
     # (templates/pvc.yaml) is mounted explicitly instead. See README.md.
     storage:
       type: none
-    extraVolumes:
-      - name: shared-pvc
-        persistentVolumeClaim:
-          claimName: jupyterhub4de-shared
-    extraVolumeMounts:
-      - name: shared-pvc
-        mountPath: /home/jovyan/data
-        subPath: data
-      - name: shared-pvc
-        mountPath: /home/jovyan/code
-        subPath: code
+      homeMountPath: /home/jovyan
+      extraVolumes:
+        - name: shared-pvc
+          persistentVolumeClaim:
+            claimName: jupyterhub4de-shared
+      extraVolumeMounts:
+        - name: shared-pvc
+          mountPath: /home/jovyan/data
+          subPath: data
+        - name: shared-pvc
+          mountPath: /home/jovyan/code
+          subPath: code
   hub:
     config:
       JupyterHub:
@@ -52,6 +53,13 @@ jupyterhub:
 # ---- Postgres overrides (backs Hive Metastore only — Z2JH's hub uses its
 # own default sqlite db, fine for this single-node prototype) -------------
 postgresql:
+  # Bitnami stopped publishing pinned/older tags under docker.io/bitnami/*
+  # (Sept 2025 registry change); the same tags still exist under
+  # docker.io/bitnamilegacy/* — see
+  # https://github.com/bitnami/containers/issues/83267.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
   auth:
     username: hive
     password: hive

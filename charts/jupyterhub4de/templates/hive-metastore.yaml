@@ -18,6 +18,21 @@ spec:
       labels:
         app: hive-metastore
     spec:
+      # apache/hive:4.0.0 doesn't bundle a Postgres JDBC driver — the image
+      # only ships the drivers for its embedded-Derby default. This
+      # initContainer fetches the driver jar into an emptyDir the main
+      # container's AUX_CLASSPATH points at, so `-Djavax.jdo.option.
+      # ConnectionDriverName=org.postgresql.Driver` can actually be loaded.
+      initContainers:
+        - name: fetch-postgres-jdbc
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - wget -qO /auxlib/postgresql.jar https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar
+          volumeMounts:
+            - name: auxlib
+              mountPath: /auxlib
       containers:
         - name: hive-metastore
           image: {{ .Values.jupyterhub4de.hiveMetastore.image }}
@@ -26,6 +41,8 @@ spec:
               value: metastore
             - name: DB_DRIVER
               value: postgres
+            - name: AUX_CLASSPATH
+              value: /auxlib/postgresql.jar
             - name: SERVICE_OPTS
               value: >-
                 -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
@@ -39,10 +56,14 @@ spec:
             - name: shared-pvc
               mountPath: /data
               subPath: {{ .Values.jupyterhub4de.sharedPvc.dataSubpath }}
+            - name: auxlib
+              mountPath: /auxlib
       volumes:
         - name: shared-pvc
           persistentVolumeClaim:
             claimName: {{ .Values.jupyterhub4de.sharedPvc.name }}
+        - name: auxlib
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
