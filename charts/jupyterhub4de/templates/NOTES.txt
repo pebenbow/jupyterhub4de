@@ -1,7 +1,7 @@
 jupyterhub4de installed into namespace {{ .Release.Namespace }}.
 
 JupyterHub:
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-proxy-public 8080:80
+  kubectl -n {{ .Release.Namespace }} port-forward svc/proxy-public 8080:80
   open http://localhost:8080  (DummyAuthenticator — any username, any password)
 
 Dagster webserver:
