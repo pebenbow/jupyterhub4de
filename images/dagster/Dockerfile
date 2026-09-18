@@ -19,5 +19,8 @@ ENV DAGSTER_HOME=/opt/dagster/dagster_home
 RUN mkdir -p "${DAGSTER_HOME}"
 COPY dagster.yaml "${DAGSTER_HOME}/dagster.yaml"
 
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 EXPOSE 3000
-ENTRYPOINT ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/app/workspace.yaml"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

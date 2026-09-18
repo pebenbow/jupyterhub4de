@@ -3,9 +3,9 @@
 # not pipeline data, so it doesn't need the shared PVC (issue #5's PVC is
 # for pipeline code + Delta tables only).
 run_launcher:
-  module: dagster.core.launcher
+  module: dagster
   class: DefaultRunLauncher
 
 run_coordinator:
-  module: dagster.core.run_coordinator
+  module: dagster
   class: QueuedRunCoordinator
