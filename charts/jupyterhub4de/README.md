@@ -31,12 +31,25 @@ edge case.
 
 Pipeline scripts (e.g. `pipelines/example_pipeline.py` in this repo) aren't
 baked into the notebook image — they live on the shared PVC's `/code`
-subpath so they can be updated without a rebuild (issue #4). For this
-manual prototype, copy them in via `kubectl cp`, e.g.:
+subpath so they can be updated without a rebuild (issue #4). The shared
+PVC is mounted at both `/code` (used by Job Pods and Hive Metastore) and
+`/home/jovyan/code` (the same underlying files, visible from JupyterLab's
+file browser, which is rooted at `$HOME` and can't see `/code` directly)
+— use whichever's convenient, they're the same directory.
+
+Each Dagster op in `images/dagster/defs/__init__.py` is registered with a
+`script_path` **relative to `/code`**, e.g. `make_job_pod_op(...,
+script_path="pipelines/example_pipeline.py")` expects the file at
+`/code/pipelines/example_pipeline.py` (equivalently
+`/home/jovyan/code/pipelines/example_pipeline.py`) — keep the path you
+copy to in sync with what's registered, or the Job Pod fails with `No
+such file or directory`.
+
+For this manual prototype, copy scripts in via `kubectl cp`, e.g.:
 
 ```
 kubectl -n jupyterhub4de cp pipelines/example_pipeline.py \
-  <a-notebook-or-job-pod>:/home/jovyan/code/example_pipeline.py
+  jupyter-admin:/home/jovyan/code/pipelines/example_pipeline.py
 ```
 
 ## Build, push, install (manual — no CI/CD per the map's settled decisions)

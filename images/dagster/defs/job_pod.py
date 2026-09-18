@@ -31,6 +31,18 @@ def _load_k8s_config() -> None:
         k8s_config.load_kube_config()
 
 
+def _failure_message(core: k8s.CoreV1Api, namespace: str, job_name: str) -> str:
+    pods = core.list_namespaced_pod(namespace, label_selector=f"job-name={job_name}").items
+    if not pods:
+        return f"Job Pod {job_name} failed, and its Pod was already gone before logs could be fetched."
+    pod_name = pods[0].metadata.name
+    try:
+        logs = core.read_namespaced_pod_log(pod_name, namespace, tail_lines=200)
+    except k8s.ApiException as e:
+        return f"Job Pod {job_name} (pod {pod_name}) failed, and its logs couldn't be fetched: {e}"
+    return f"Job Pod {job_name} (pod {pod_name}) failed. Last 200 log lines:\n{logs}"
+
+
 def make_job_pod_op(*, name: str, script_path: str):
     """Returns an @op that runs `script_path` (relative to the shared
     PVC's /code subpath) inside a fresh Job Pod using the notebook image.
@@ -40,6 +52,7 @@ def make_job_pod_op(*, name: str, script_path: str):
     def _op(context: OpExecutionContext) -> None:
         _load_k8s_config()
         batch = k8s.BatchV1Api()
+        core = k8s.CoreV1Api()
 
         namespace = os.environ["K8S_NAMESPACE"]
         notebook_image = os.environ["NOTEBOOK_IMAGE"]
@@ -116,7 +129,11 @@ def make_job_pod_op(*, name: str, script_path: str):
                     context.log.info(f"Job Pod {job_name} succeeded")
                     return
                 if status.failed:
-                    raise Failure(f"Job Pod {job_name} failed — see `kubectl logs -n {namespace} job/{job_name}`")
+                    # The Job is deleted (with its Pod) in the finally block
+                    # below regardless of outcome, so `kubectl logs` won't
+                    # exist by the time anyone reads a failure message —
+                    # fetch and surface the Pod's own logs here instead.
+                    raise Failure(_failure_message(core, namespace, job_name))
                 time.sleep(POLL_INTERVAL_SECONDS)
         finally:
             batch.delete_namespaced_job(

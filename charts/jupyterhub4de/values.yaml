@@ -32,12 +32,15 @@ jupyterhub:
     # #5), so storage provisioning is turned off here and the shared PVC
     # (templates/pvc.yaml) is mounted explicitly instead. See README.md.
     #
-    # Mounted at /data and /code (not under /home/jovyan) to match the
-    # mount paths Job Pods (images/dagster/defs/job_pod.py) and Hive
-    # Metastore (templates/hive-metastore.yaml) use — Hive Metastore
-    # records each table's location as an absolute file URI, so every pod
-    # that might read one back needs the shared PVC mounted at the same
-    # absolute path.
+    # Mounted twice: at /data and /code, matching the mount paths Job Pods
+    # (images/dagster/defs/job_pod.py) and Hive Metastore
+    # (templates/hive-metastore.yaml) use — Hive Metastore records each
+    # table's location as an absolute file URI, so every pod that might
+    # read one back needs the shared PVC mounted at the same absolute
+    # path — AND at /home/jovyan/{data,code}, since JupyterLab's file
+    # browser only shows paths under $HOME (the notebook-dir set in
+    # images/notebook/entrypoint.sh), so /data and /code alone would be
+    # invisible/unusable from the UI. Same PVC subpath, two mount points.
     storage:
       type: none
       homeMountPath: /home/jovyan
@@ -51,6 +54,12 @@ jupyterhub:
           subPath: data
         - name: shared-pvc
           mountPath: /code
+          subPath: code
+        - name: shared-pvc
+          mountPath: /home/jovyan/data
+          subPath: data
+        - name: shared-pvc
+          mountPath: /home/jovyan/code
           subPath: code
   hub:
     config:
