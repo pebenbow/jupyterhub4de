@@ -13,7 +13,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: ["batch"]
-    resources: ["jobs"]
+    # jobs/status is a distinct RBAC resource from jobs — job_pod.py polls
+    # it via read_namespaced_job_status, which 403s without this listed
+    # explicitly (get on "jobs" alone doesn't cover it).
+    resources: ["jobs", "jobs/status"]
     verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
