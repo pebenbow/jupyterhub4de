@@ -1,0 +1,4 @@
+{
+    "workbench.startupEditor": "none",
+    "python.defaultInterpreterPath": "/opt/conda/bin/python"
+}

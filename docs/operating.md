@@ -16,23 +16,32 @@ changed `images/` or `charts/`.
    ```
    cd charts/jupyterhub4de
    helm dependency update
-   helm install jupyterhub4de . -n jupyterhub4de --create-namespace
+   helm install jupyterhub4de . -n jupyterhub4de --create-namespace \
+     -f values-positron-license.yaml \
+     --set-file 'jupyterhub.singleuser.extraFiles.license\.lic.stringData'=../../license.lic
    ```
+   (Drop the last two lines if you don't have a Positron license yet.)
 3. Confirm pods are healthy (may take a minute after a cold Docker Desktop start):
    ```
    kubectl -n jupyterhub4de get pods
    ```
-   Expect `hub`, `proxy`, `dagster`, `hive-metastore`, `<release>-postgresql`,
-   and `user-scheduler` all `Running`. `hive-metastore` restarting once or
-   twice early on (waiting for Postgres) is normal and self-resolves.
-4. Port-forward the two UIs you need (each blocks its terminal — use
-   separate tabs, or add `&` to background them):
+   Expect `hub`, `proxy`, `dagster`, `hive-metastore`, `spark-thriftserver`,
+   `cloudbeaver`, `<release>-postgresql`, and `user-scheduler` all `Running`.
+   `hive-metastore` restarting once or twice early on (waiting for Postgres)
+   is normal and self-resolves.
+4. Port-forward the UIs you need (each blocks its terminal — use separate
+   tabs, or add `&` to background them):
    ```
    kubectl -n jupyterhub4de port-forward svc/proxy-public 8080:80
    kubectl -n jupyterhub4de port-forward svc/dagster 3000:3000
+   kubectl -n jupyterhub4de port-forward svc/cloudbeaver 8978:8978
    ```
 5. Open `http://localhost:8080` (JupyterHub — any username/password, it's
-   DummyAuthenticator) and `http://localhost:3000` (Dagster).
+   DummyAuthenticator), `http://localhost:3000` (Dagster), and
+   `http://localhost:8978` (CloudBeaver — catalog/schema/table browser over
+   Spark Thrift Server; see `charts/jupyterhub4de/templates/cloudbeaver.yaml`
+   for the one-time setup-wizard step the first person to open it needs to
+   do).
 
 ## Spin down
 
@@ -68,6 +77,14 @@ Pick based on how long you're stepping away:
 - Notebook pod picked up your Dockerfile change but the running server
   didn't: Z2JH's spawner only applies a new pod template on (re)spawn —
   use **Hub Control Panel → Stop My Server**, then start it again.
+- Positron tile opens a "Positron Server failed to start" page: the page
+  shows the end of positron-server's log. "No license key provided" means
+  the release was installed without `values-positron-license.yaml` +
+  `--set-file` (see `charts/jupyterhub4de/README.md`); check
+  `kubectl -n jupyterhub4de exec jupyter-<user> -- ls -l
+  /opt/positron-server/resources/activation/linux/x86_64/` shows
+  `license.lic`. After a `helm upgrade` that adds it, Stop My Server and
+  start again (same respawn rule as above).
 - `port-forward` errors with `services "X" not found`: list the actual
   names with `kubectl -n jupyterhub4de get svc` — some subchart Services
   (e.g. Z2JH's `proxy-public`) aren't prefixed with the release name.

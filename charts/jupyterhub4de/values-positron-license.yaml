@@ -1,0 +1,34 @@
+# Positron Server license, layered on top of values.yaml. Kept out of
+# values.yaml on purpose: Z2JH mounts each singleuser.extraFiles entry from a
+# Secret key via subPath, and a declared entry with no content behind it
+# leaves the notebook pod unable to start at all. Without this overlay,
+# JupyterLab and code-server work normally and only the Positron tile fails
+# (with positron-server's own "no license" page).
+#
+# The license content itself is never in this file. Pass it at install time:
+#
+#   helm upgrade --install jupyterhub4de charts/jupyterhub4de \
+#     -n jupyterhub4de \
+#     -f charts/jupyterhub4de/values-positron-license.yaml \
+#     --set-file 'jupyterhub.singleuser.extraFiles.license\.lic.stringData'=./license.lic
+#
+# (license.lic is free for academic use: academic-licenses@posit.co.)
+jupyterhub:
+  singleuser:
+    extraFiles:
+      # Key must be quoted (it has a dot) and match the target filename: Z2JH
+      # uses it as the volume's subPath. Mounting the file (not the whole
+      # activation dir) matters, since that dir also holds the license
+      # libraries positron-server needs.
+      #
+      # x86_64 must match the node's architecture (Docker Desktop on the
+      # research tower is amd64). Positron only reads the directory for the
+      # running architecture, and the wrong one fails silently: a blank tab
+      # for two minutes, then "No license key provided" in the pod log.
+      "license.lic":
+        mountPath: /opt/positron-server/resources/activation/linux/x86_64/license.lic
+        # Unquoted so YAML reads it as octal (444 unquoted would be decimal).
+        # positron-server runs as jovyan (uid 1000) and reads this file
+        # itself; the Secret volume is root-owned, so it must be
+        # world-readable.
+        mode: 0444

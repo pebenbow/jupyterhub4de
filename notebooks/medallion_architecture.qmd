@@ -1,0 +1,248 @@
+---
+title: "Medallion Architecture: Bronze / Silver / Gold"
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-overflow: wrap
+jupyter: python3
+---
+
+End-to-end example: a messy raw CSV lands in a filesystem "landing zone",
+then flows through three Delta tables of increasing quality:
+
+- **Bronze** — raw ingestion, schema-on-read, no cleaning (source of truth for what actually arrived)
+- **Silver** — cleaned, typed, deduplicated, conformed
+- **Gold** — business-level aggregates ready for reporting
+
+Each layer is a real Delta table in Hive Metastore, so `spark.catalog` and
+`SHOW`/`DESCRIBE` commands can inspect it at every stage — those are broken
+out into their own cells so they can be re-run independently while exploring.
+
+**To run this**: put this file on the shared PVC's `/code` subpath alongside
+`pipelines/spark_session.py` (e.g. `~/code/notebooks/`), same as any other
+pipeline code — see `charts/jupyterhub4de/README.md` for the `kubectl cp`
+pattern. The landing-zone CSV is written under `~/data/landing/`, which is
+also on the durable shared PVC (`~/data` and `~/code` are the only two
+paths that survive a pod restart).
+
+```{python}
+import os
+import sys
+
+sys.path.append("/home/jovyan/code/pipelines")
+
+# get_spark() (below) reads HIVE_METASTORE_URI from the environment — set
+# for Dagster Job Pods via the shared ConfigMap
+# (charts/jupyterhub4de/templates/configmap.yaml), but NOT for this
+# notebook's own pod, which only gets the metastore URI baked into
+# images/notebook/hive-site.xml. Set it here so the same shared helper
+# pipeline code already uses also works interactively.
+os.environ.setdefault("HIVE_METASTORE_URI", "thrift://hive-metastore:9083")
+
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType, StructField, StructType
+
+from spark_session import get_spark
+
+spark = get_spark("medallion-architecture-demo")
+
+spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
+spark.sql("CREATE DATABASE IF NOT EXISTS silver")
+spark.sql("CREATE DATABASE IF NOT EXISTS gold")
+```
+
+## 1. Landing Zone
+
+Simulates an upstream system dropping a raw CSV export. Deliberately messy —
+inconsistent casing, a currency symbol in a numeric column, a duplicate
+`order_id` (a late correction re-sent by the source system), and a missing
+customer — the exact kind of thing bronze should preserve as-is and silver
+should fix.
+
+```{python}
+import os
+
+landing_dir = "/home/jovyan/data/landing"
+os.makedirs(landing_dir, exist_ok=True)
+landing_file = os.path.join(landing_dir, "orders_raw.csv")
+
+raw_csv = """order_id,customer,category,region,price,quantity,order_date
+1001,Alice Chen,Electronics,West,$199.99,1,2026-01-05
+1002,Bob Martin,electronics,west,$49.50,2,2026-01-05
+1003,,Home Goods,East,$12.00,3,2026-01-06
+1004,Dana Lee,HOME GOODS,EAST,$8.25,5,2026-01-06
+1005,Evan Cole,Electronics,West,$199.99,1,2026-01-07
+1006,Farah Hassan,Apparel,South,$25.00,4,2026-01-07
+1007,George Kim,apparel,south,$15.75,2,2026-01-08
+1005,Evan Cole,Electronics,West,$179.99,1,2026-01-08
+1008,Hana Suzuki,Home Goods,East,$32.10,1,2026-01-08
+"""
+
+with open(landing_file, "w") as f:
+    f.write(raw_csv)
+
+print(f"Wrote {landing_file}")
+print(raw_csv)
+```
+
+## 2. Bronze Layer — Raw Ingestion
+
+Read the CSV with every column as `StringType` and write it through
+unchanged, plus ingestion metadata. No cleaning, no deduplication — bronze's
+job is to durably capture exactly what arrived, including the duplicate
+`order_id` row and the blank customer.
+
+```{python}
+raw_schema = StructType(
+    [
+        StructField("order_id", StringType()),
+        StructField("customer", StringType()),
+        StructField("category", StringType()),
+        StructField("region", StringType()),
+        StructField("price", StringType()),
+        StructField("quantity", StringType()),
+        StructField("order_date", StringType()),
+    ]
+)
+
+bronze_df = (
+    spark.read.option("header", True)
+    .schema(raw_schema)
+    .csv(landing_file)
+    .withColumn("ingestion_timestamp", F.current_timestamp())
+    .withColumn("source_file", F.lit(landing_file))
+    # current_timestamp() is evaluated once per query, so every row in this
+    # batch gets the identical value — on its own it can't break a tie
+    # between two rows for the same order_id ingested in the same batch
+    # (exactly what the duplicate 1005 below is). monotonically_increasing_id()
+    # preserves the file's original row order, which is what actually
+    # distinguishes "arrived first" from "arrived as a correction" here.
+    .withColumn("_ingest_seq", F.monotonically_increasing_id())
+)
+
+# overwriteSchema=true: Delta enforces schema-on-write, so re-running this
+# notebook after changing a column here (as happened while building this
+# example) fails against the table's existing schema on the PVC without it.
+bronze_df.write.format("delta").mode("overwrite").option(
+    "overwriteSchema", "true"
+).saveAsTable("bronze.orders_raw")
+
+spark.sql("SELECT * FROM bronze.orders_raw ORDER BY _ingest_seq").show(truncate=False)
+```
+
+```{python}
+# Catalog check: bronze
+spark.catalog.listDatabases()
+```
+
+```{python}
+spark.catalog.listTables("bronze")
+```
+
+```{python}
+spark.catalog.listColumns("bronze.orders_raw")
+```
+
+## 3. Silver Layer — Cleaned & Conformed
+
+Read bronze and fix each problem the landing data had:
+
+- cast `price` (strip `$`) to `double`, `quantity` to `int`, `order_date` to `date`
+- normalize `category`/`region` casing with `initcap`
+- drop rows with a missing `customer` (can't attribute the sale)
+- deduplicate `order_id`, keeping the most recently ingested version — this
+  is what makes the late-arriving `1005` correction resolve to the newer
+  `$179.99` price rather than the original `$199.99`
+
+```{python}
+from pyspark.sql.window import Window
+
+bronze_df = spark.table("bronze.orders_raw")
+
+cleaned = (
+    bronze_df.withColumn("price", F.regexp_replace("price", "[$,]", "").cast("double"))
+    .withColumn("quantity", F.col("quantity").cast("int"))
+    .withColumn("order_date", F.col("order_date").cast("date"))
+    .withColumn("category", F.initcap(F.lower(F.col("category"))))
+    .withColumn("region", F.initcap(F.lower(F.col("region"))))
+    .filter(F.col("customer").isNotNull())
+)
+
+dedupe_window = Window.partitionBy("order_id").orderBy(F.col("_ingest_seq").desc())
+silver_df = (
+    cleaned.withColumn("_row_num", F.row_number().over(dedupe_window))
+    .filter(F.col("_row_num") == 1)
+    .drop("_row_num", "_ingest_seq", "ingestion_timestamp", "source_file")
+)
+
+silver_df.write.format("delta").mode("overwrite").option(
+    "overwriteSchema", "true"
+).saveAsTable("silver.orders_clean")
+
+spark.sql("SELECT * FROM silver.orders_clean ORDER BY order_id").show()
+```
+
+```{python}
+# Catalog check: silver
+spark.catalog.listTables("silver")
+```
+
+```{python}
+spark.catalog.listColumns("silver.orders_clean")
+```
+
+## 4. Gold Layer — Business Aggregates
+
+Silver is order-grain; gold rolls it up to what a dashboard would actually
+show — revenue and order volume by category and region.
+
+```{python}
+silver_df = spark.table("silver.orders_clean")
+
+gold_df = silver_df.groupBy("category", "region").agg(
+    F.round(F.sum(F.col("price") * F.col("quantity")), 2).alias("total_revenue"),
+    F.sum("quantity").alias("total_units"),
+    F.count("order_id").alias("order_count"),
+)
+
+gold_df.write.format("delta").mode("overwrite").option(
+    "overwriteSchema", "true"
+).saveAsTable("gold.category_region_summary")
+
+spark.sql(
+    "SELECT * FROM gold.category_region_summary ORDER BY total_revenue DESC"
+).show()
+```
+
+```{python}
+# Catalog check: gold
+spark.catalog.listTables("gold")
+```
+
+```{python}
+spark.catalog.listColumns("gold.category_region_summary")
+```
+
+## 5. Explore the Full Catalog
+
+All three layers side by side, plus the SQL equivalents of the
+`spark.catalog` calls above (`SHOW`/`DESCRIBE`), for whichever style is
+more natural to work in.
+
+```{python}
+for db in ["bronze", "silver", "gold"]:
+    print(f"--- {db} ---")
+    for t in spark.catalog.listTables(db):
+        print(" ", t.name)
+```
+
+```{python}
+spark.sql("SHOW DATABASES").show()
+spark.sql("SHOW TABLES IN silver").show()
+spark.sql("DESCRIBE TABLE EXTENDED gold.category_region_summary").show(truncate=False)
+```
+
+```{python}
+spark.stop()
+```

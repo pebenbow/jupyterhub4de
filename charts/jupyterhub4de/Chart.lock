@@ -1,0 +1,9 @@
+dependencies:
+- name: jupyterhub
+  repository: https://hub.jupyter.org/helm-chart/
+  version: 3.3.8
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.2.3
+digest: sha256:81b98d70d779a3d8a74780464e8357bb4802dd6a0f574eb8770d827fa38eff4f
+generated: "2026-09-17T15:21:45.8832499-04:00"

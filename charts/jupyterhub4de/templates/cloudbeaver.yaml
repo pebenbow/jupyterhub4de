@@ -1,0 +1,115 @@
+# CloudBeaver: browser-based catalog/schema/table explorer GUI for students
+# (issue #6), talking to Spark Thrift Server (templates/spark-thriftserver.yaml)
+# over the HiveServer2 Thrift wire protocol it speaks. Deployed standalone
+# (own port-forward, like Dagster's :3000) rather than through the notebook
+# pod's jupyter-server-proxy, since it's not a per-user app — one shared
+# catalog view for the whole class.
+#
+# NOT a one-`helm install`-and-done component: CloudBeaver Community Edition
+# has no headless bootstrap path, confirmed by actually trying each one:
+#   - Pre-seeding a connection via conf/initial-data-sources.conf (CB's own
+#     documented mechanism — it does get copied to
+#     workspace/GlobalConfiguration/.dbeaver/data-sources.json on first
+#     boot) silently produces a dead connection if the driver id doesn't
+#     exist. `apache_hive4` (the org.jkiss.dbeaver.ext.hive plugin's driver)
+#     is bundled in the image but not wired into CE's product feature set —
+#     Hive/Hadoop-family connectors are Enterprise-only — so a seeded
+#     connection using it shows up in data-sources.json as `"description":
+#     "Missing driver apache_hive4"` and never appears in the UI. Not worth
+#     re-attempting with a different file-based seed: CE's actual supported
+#     driver against Spark Thrift Server is `generic:kyuubi_hive` (Apache
+#     Kyuubi — its JDBC driver speaks the same HiveServer2 protocol Spark
+#     Thrift Server does, and this was confirmed live: a connection using it
+#     opens and browses catalogs/schemas/tables correctly), but it has to be
+#     created through the API/UI once a real session exists, not seeded.
+#   - CloudBeaver's own env vars (CLOUDBEAVER_APP_*) only take effect during
+#     the very first configuration; once the setup wizard has run once, the
+#     result is persisted into the H2 DB on the workspace PVC and further
+#     env var changes are silently ignored on restart. Don't expect
+#     `CLOUDBEAVER_APP_SUPPORTS_CUSTOM_CONNECTIONS` or similar to do
+#     anything after the first boot — change it in Administration -> Server
+#     Configuration instead.
+#   - Its `local` auth provider's login call expects a client-side-hashed
+#     credential this chart has no easy way to replicate, so scripting past
+#     the wizard via the GraphQL API isn't reliable either.
+#
+# One-time manual setup (persists on the workspace PVC below, so this is a
+# per-PVC-lifetime cost, not per-restart):
+#   1. Open the UI, complete the setup wizard. Pick any admin username other
+#      than "admin" — it collides with the built-in "admin" team and the
+#      wizard rejects it.
+#   2. Administration -> Server Configuration -> enable "Users can create
+#      connections" (needed to add the connection below at all; there's no
+#      way to allow it for admins only while denying students in CE).
+#   3. New Connection -> search "Kyuubi" -> Apache Kyuubi driver.
+#      Host: {{ .Values.jupyterhub4de.sparkThriftServer.serviceName }}
+#      Port: {{ .Values.jupyterhub4de.sparkThriftServer.port }} (override Kyuubi's own default of 10009)
+#      Database: default
+#   4. Administration -> Connections -> (the new connection) -> Access ->
+#      grant it to the user/anonymous team, so students see it without
+#      logging in (verified: CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_
+#      ANONYMOUS_TEAM below does NOT retroactively apply to a connection
+#      created after first boot — this grant has to happen here too).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cloudbeaver-workspace
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.jupyterhub4de.sharedPvc.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.jupyterhub4de.cloudbeaver.workspaceSize }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudbeaver
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudbeaver
+  template:
+    metadata:
+      labels:
+        app: cloudbeaver
+    spec:
+      containers:
+        - name: cloudbeaver
+          image: {{ .Values.jupyterhub4de.cloudbeaver.image }}
+          env:
+            # Only actually take effect on the very first-ever boot of a
+            # fresh workspace PVC — see the comment above. Left set anyway
+            # so a from-scratch `helm install` needs one fewer manual
+            # Administration click than otherwise.
+            - name: CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED
+              value: "true"
+            - name: CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM
+              value: "true"
+            - name: CLOUDBEAVER_APP_SUPPORTS_CUSTOM_CONNECTIONS
+              value: "true"
+          ports:
+            - containerPort: 8978
+          volumeMounts:
+            - name: workspace
+              mountPath: /opt/cloudbeaver/workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: cloudbeaver-workspace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudbeaver
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: cloudbeaver
+  ports:
+    - port: 8978
+      targetPort: 8978

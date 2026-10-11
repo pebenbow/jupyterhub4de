@@ -1,0 +1,218 @@
+---
+title: "Delta Lake Time Travel"
+format:
+  html:
+    toc: true
+    code-tools: true
+    code-overflow: wrap
+jupyter: python3
+---
+
+Every write to a Delta table creates a new, numbered version instead of
+overwriting data in place. This document builds up a few versions of one
+table, then reads (and restores) older versions of it — the mechanism
+that makes "what did this table look like yesterday" a query, not a
+backup-restore exercise.
+
+**To run this**: same as `medallion_architecture.qmd` — put it on the
+shared PVC's `/code` subpath (e.g. `~/code/notebooks/`).
+
+```{python}
+import os
+import sys
+import time
+
+sys.path.append("/home/jovyan/code/pipelines")
+
+# See medallion_architecture.qmd's first cell for why this is needed —
+# get_spark() reads this from the environment, but the notebook pod (unlike
+# Dagster's Job Pods) doesn't have it set.
+os.environ.setdefault("HIVE_METASTORE_URI", "thrift://hive-metastore:9083")
+
+from spark_session import get_spark
+
+spark = get_spark("delta-time-travel-demo")
+
+spark.sql("CREATE DATABASE IF NOT EXISTS timetravel")
+```
+
+## Initial Load
+
+A small inventory table: three items, starting quantities and prices.
+`CREATE TABLE` itself is version 0 — an empty table, schema only, no rows
+yet — so the `INSERT` right after it is what actually creates version 1,
+the first version with data in it. That distinction matters below: every
+`VERSION AS OF` reference in this document points at version 1 or later,
+never at version 0.
+
+```{python}
+spark.sql("DROP TABLE IF EXISTS timetravel.inventory")
+
+spark.sql(
+    """
+    CREATE TABLE timetravel.inventory (
+        item_id INT,
+        item_name STRING,
+        quantity INT,
+        price DOUBLE
+    ) USING delta
+    """
+)
+
+spark.sql(
+    """
+    INSERT INTO timetravel.inventory VALUES
+        (1, 'Widget', 100, 4.99),
+        (2, 'Gadget', 50, 19.99),
+        (3, 'Gizmo', 75, 9.99)
+    """
+)
+
+# Descending order grabs the most recent version — at this point that's
+# version 1 (the INSERT), not version 0 (the empty CREATE TABLE).
+v1_timestamp = spark.sql(
+    "DESCRIBE HISTORY timetravel.inventory"
+).orderBy("version", ascending=False).first().timestamp
+
+spark.sql("SELECT * FROM timetravel.inventory ORDER BY item_id").show()
+```
+
+## Version 2 — A Sale (quantity drops)
+
+`time.sleep(1)` before each change just spaces the versions out in wall-clock
+time, so the `timestampAsOf` queries later land unambiguously between
+commits — Delta's own version numbers don't need it, only the
+timestamp-based lookups do.
+
+```{python}
+time.sleep(1)
+
+spark.sql(
+    "UPDATE timetravel.inventory SET quantity = quantity - 30 WHERE item_id = 1"
+)
+
+v2_timestamp = spark.sql(
+    "DESCRIBE HISTORY timetravel.inventory"
+).orderBy("version", ascending=False).first().timestamp
+
+spark.sql("SELECT * FROM timetravel.inventory ORDER BY item_id").show()
+```
+
+## Version 3 — A Price Change
+
+```{python}
+time.sleep(1)
+
+spark.sql(
+    "UPDATE timetravel.inventory SET price = ROUND(price * 1.10, 2) WHERE item_id = 2"
+)
+
+v3_timestamp = spark.sql(
+    "DESCRIBE HISTORY timetravel.inventory"
+).orderBy("version", ascending=False).first().timestamp
+
+spark.sql("SELECT * FROM timetravel.inventory ORDER BY item_id").show()
+```
+
+## The Version History
+
+`DESCRIBE HISTORY` is Delta's audit log for the table — every write, who
+made it (`jovyan` here), what kind of operation it was, and a timestamp.
+This is what the version numbers and timestamps used below actually come
+from — nothing here is invented after the fact.
+
+```{python}
+spark.sql("DESCRIBE HISTORY timetravel.inventory").select(
+    "version", "timestamp", "operation", "operationParameters"
+).orderBy("version").show(truncate=False)
+```
+
+## Reading Old Versions — `VERSION AS OF`
+
+SQL syntax for querying a specific version number directly, no timestamp
+needed.
+
+```{python}
+print("--- version 1 (initial load) ---")
+spark.sql("SELECT * FROM timetravel.inventory VERSION AS OF 1 ORDER BY item_id").show()
+
+print("--- version 2 (after the sale) ---")
+spark.sql("SELECT * FROM timetravel.inventory VERSION AS OF 2 ORDER BY item_id").show()
+
+print("--- current (version 3) ---")
+spark.sql("SELECT * FROM timetravel.inventory ORDER BY item_id").show()
+```
+
+## Reading Old Versions — `TIMESTAMP AS OF`
+
+Same idea, but by wall-clock time instead of version number — the more
+natural question when you're asking "what did this look like last Tuesday"
+rather than "what did version 4 look like."
+
+```{python}
+print(f"Querying as of {v1_timestamp} (right after the initial load):")
+spark.sql(
+    f"SELECT * FROM timetravel.inventory TIMESTAMP AS OF '{v1_timestamp}' ORDER BY item_id"
+).show()
+```
+
+## The Same Thing via the DataFrame API
+
+Useful when the version/timestamp is a variable in code rather than a
+literal in a hand-written query.
+
+```{python}
+spark.read.format("delta").option("versionAsOf", 1).table(
+    "timetravel.inventory"
+).orderBy("item_id").show()
+```
+
+## Diffing Two Versions
+
+Time travel makes before/after comparisons a plain join — no separate
+audit table to maintain.
+
+```{python}
+v1_df = spark.read.format("delta").option("versionAsOf", 1).table("timetravel.inventory")
+current_df = spark.table("timetravel.inventory")
+
+diff = (
+    v1_df.alias("old")
+    .join(current_df.alias("new"), "item_id")
+    .selectExpr(
+        "item_id",
+        "old.quantity AS quantity_v1",
+        "new.quantity AS quantity_now",
+        "old.price AS price_v1",
+        "new.price AS price_now",
+    )
+    .filter("quantity_v1 != quantity_now OR price_v1 != price_now")
+)
+
+diff.show()
+```
+
+## Restoring an Older Version
+
+`RESTORE` doesn't delete history — it adds a *new* version whose data
+matches the target version. Restoring to version 2 undoes the price
+change (version 3) but keeps the sale (version 2's reduced quantity) —
+the table's current state goes back to what it looked like right after
+the sale, and version 3 is still there in history if anyone needs to
+look at the price change again.
+
+```{python}
+spark.sql("RESTORE TABLE timetravel.inventory TO VERSION AS OF 2")
+
+print("--- current state after RESTORE (matches version 2's data) ---")
+spark.sql("SELECT * FROM timetravel.inventory ORDER BY item_id").show()
+
+print("--- full history: note RESTORE created version 4, not a rollback ---")
+spark.sql("DESCRIBE HISTORY timetravel.inventory").select(
+    "version", "timestamp", "operation"
+).orderBy("version").show(truncate=False)
+```
+
+```{python}
+spark.stop()
+```

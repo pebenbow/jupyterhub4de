@@ -1,0 +1,105 @@
+# Spark Thrift Server: a query-facing JDBC/Thrift endpoint in front of Hive
+# Metastore, for SQL clients (SQLTools, CloudBeaver, beeline) that want to
+# browse catalogs/schemas/tables and run SQL directly (issue #6). Spark's own
+# driver processes (notebook pod, Job Pods) already talk to Hive Metastore
+# directly over its metadata Thrift API (hive.metastore.uris in
+# images/notebook/hive-site.xml) — that's a different protocol a generic SQL
+# client can't speak, which is why this exists as a separate piece.
+#
+# Reuses the notebook image rather than a new one: it already bakes in
+# hive-site.xml (thrift://hive-metastore:9083) and matches the Spark/Hadoop
+# version the rest of the platform runs, so the catalog this server exposes
+# is guaranteed consistent with what notebooks and Job Pods see.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-thriftserver
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-thriftserver
+  template:
+    metadata:
+      labels:
+        app: spark-thriftserver
+    spec:
+      # `start-thriftserver.sh --packages ...` resolves Delta's jars via Ivy
+      # into a dynamic classloader that's only reliably visible on the
+      # launching thread — HiveThriftServer2 handles each JDBC connection on
+      # its own worker thread, so the very first client to connect (e.g.
+      # beeline, CloudBeaver) gets `ClassNotFoundException:
+      # org.apache.spark.sql.delta.catalog.DeltaCatalog` even though the
+      # server itself starts cleanly. Fetching the jars up front and putting
+      # them on $SPARK_HOME/jars (the base classpath every thread inherits)
+      # avoids the dynamic classloader entirely.
+      initContainers:
+        - name: fetch-delta-jars
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              BASE=https://repo1.maven.org/maven2
+              DV={{ .Values.jupyterhub4de.sparkThriftServer.deltaVersion }}
+              wget -qO /extra-jars/delta-spark_2.13-$DV.jar $BASE/io/delta/delta-spark_2.13/$DV/delta-spark_2.13-$DV.jar
+              wget -qO /extra-jars/delta-storage-$DV.jar $BASE/io/delta/delta-storage/$DV/delta-storage-$DV.jar
+              wget -qO /extra-jars/antlr4-runtime-4.13.1.jar $BASE/org/antlr/antlr4-runtime/4.13.1/antlr4-runtime-4.13.1.jar
+          volumeMounts:
+            - name: extra-jars
+              mountPath: /extra-jars
+      containers:
+        - name: spark-thriftserver
+          image: {{ .Values.jupyterhub4de.images.notebook }}
+          # Overrides the notebook image's own ENTRYPOINT (which starts
+          # jupyterhub-singleuser) — this pod's job is only to run the Thrift
+          # Server in the foreground. SPARK_NO_DAEMONIZE is required because
+          # start-thriftserver.sh backgrounds itself and exits by default,
+          # which would make Kubernetes think the container immediately
+          # died.
+          command: ["/bin/bash", "-c"]
+          args:
+            - >-
+              exec $SPARK_HOME/sbin/start-thriftserver.sh
+              --driver-class-path "/extra-jars/*"
+              --conf spark.sql.catalogImplementation=hive
+              --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+              --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+              --conf spark.sql.warehouse.dir={{ .Values.jupyterhub4de.hiveMetastore.warehouseDir }}
+              --hiveconf hive.server2.thrift.port={{ .Values.jupyterhub4de.sparkThriftServer.port }}
+              --hiveconf hive.server2.thrift.bind.host=0.0.0.0
+          env:
+            - name: SPARK_NO_DAEMONIZE
+              value: "true"
+          ports:
+            - containerPort: {{ .Values.jupyterhub4de.sparkThriftServer.port }}
+          volumeMounts:
+            # Same shared PVC subpath/mount point Hive Metastore and Job
+            # Pods use — table locations are recorded as absolute file URIs,
+            # so every SQL client reading table data back needs this at the
+            # identical path (see values.yaml's storage comment).
+            - name: shared-pvc
+              mountPath: /data
+              subPath: {{ .Values.jupyterhub4de.sharedPvc.dataSubpath }}
+            - name: extra-jars
+              mountPath: /extra-jars
+      volumes:
+        - name: shared-pvc
+          persistentVolumeClaim:
+            claimName: {{ .Values.jupyterhub4de.sharedPvc.name }}
+        - name: extra-jars
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.jupyterhub4de.sparkThriftServer.serviceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: spark-thriftserver
+  ports:
+    - port: {{ .Values.jupyterhub4de.sparkThriftServer.port }}
+      targetPort: {{ .Values.jupyterhub4de.sparkThriftServer.port }}

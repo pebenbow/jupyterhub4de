@@ -8,6 +8,14 @@ Dagster webserver:
   kubectl -n {{ .Release.Namespace }} port-forward svc/dagster 3000:3000
   open http://localhost:3000
 
+CloudBeaver (catalog/schema/table explorer, over Spark Thrift Server):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/cloudbeaver 8978:8978
+  open http://localhost:8978
+  First time only (persists on the workspace PVC after): complete the
+  setup wizard, add a connection using the Apache Kyuubi driver against
+  spark-thriftserver:10000, and grant students access to it. Exact steps
+  and why each one is needed: templates/cloudbeaver.yaml.
+
 Hive Metastore health:
   kubectl -n {{ .Release.Namespace }} logs deploy/hive-metastore
   kubectl -n {{ .Release.Namespace }} get pods -l app=hive-metastore

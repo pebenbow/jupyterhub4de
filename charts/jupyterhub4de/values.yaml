@@ -20,6 +20,19 @@ jupyterhub4de:
     serviceName: hive-metastore
     image: "apache/hive:4.0.0"
     warehouseDir: /data/warehouse
+  sparkThriftServer:
+    # Fixed, unqualified Service name, same rationale as hiveMetastore's:
+    # nothing else needs to template around it.
+    serviceName: spark-thriftserver
+    port: 10000
+    # Must match the delta-spark version pinned in images/notebook/Dockerfile
+    # (pyspark/delta-spark version comment) — this server needs the matching
+    # Delta jar resolved via --packages/Ivy since it isn't launched through
+    # configure_spark_with_delta_pip like notebook/pipeline code is.
+    deltaVersion: "4.0.0"
+  cloudbeaver:
+    image: "dbeaver/cloudbeaver:latest"
+    workspaceSize: 1Gi
 
 # ---- Zero to JupyterHub overrides ----------------------------------------
 jupyterhub:
@@ -27,6 +40,13 @@ jupyterhub:
     image:
       name: ghcr.io/pebenbow/jupyterhub4de-notebook
       tag: latest
+    # Positron Server alone wants ~2.5G per session, on top of the Spark
+    # driver JVM in the same pod. Guarantee only, no limit: a limit would
+    # OOM-kill Spark mid-job rather than let it use the tower's spare RAM.
+    # Positron's license is wired in by values-positron-license.yaml, not
+    # here (see that file for why).
+    memory:
+      guarantee: 2.5G
     # Z2JH's default `storage.type: dynamic` provisions one PVC per user.
     # This prototype instead shares one PVC with Dagster's Job Pods (issue
     # #5), so storage provisioning is turned off here and the shared PVC
